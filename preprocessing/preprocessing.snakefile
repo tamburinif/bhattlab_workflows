@@ -2,6 +2,20 @@
 import re,os,subprocess
 from os.path import join, expanduser, abspath
 
+'''
+Aim: A simple wrapper for metagenomics QC using paired end reads.
+To use this pipeline, edit parameters in the config.yaml, and specify the proper
+path to config file in the submission script.
+
+This script will create the following folders:
+PROJECT_DIR/qc/00_qc_reports/pre_fastqc
+PROJECT_DIR/qc/00_qc_reports/post_fastqc
+PROJECT_DIR/qc/01_trimmed
+PROJECT_DIR/qc/02_dereplicate
+PROJECT_DIR/qc/03_interleave
+PROJECT_DIR/qc/04_host_align
+'''
+
 ################################################################################
 # specify project directories
 DATA_DIR    = config["raw_reads_directory"]
@@ -15,8 +29,9 @@ if PROJECT_DIR[0] == '~':
 PROJECT_DIR = abspath(PROJECT_DIR)
 
 # get file names
-FILES = [f for f in os.listdir(DATA_DIR) if f.endswith(tuple(['fastq.gz', 'fq.gz']))]
-SAMPLE_PREFIX = list(set([re.split('_1.f|_2.f|_R1|_R2', i)[0] for i in FILES]))
+ext = ['fastq', 'fastq.gz', 'fq', 'fq.gz']
+FILES = [f for f in os.listdir(DATA_DIR) if f.endswith(tuple(ext))]
+SAMPLE_PREFIX = list(set([re.sub(r'_(R|PE)?[1-2]\..+', '', i) for i in FILES]))
 
 ################################################################################
 localrules: assembly_meta_file, pre_multiqc, post_multiqc
@@ -48,7 +63,7 @@ rule pre_fastqc:
 	"""
 
 rule pre_multiqc:
-	input: 
+	input:
 		expand(join(PROJECT_DIR,  "01_processing/00_qc_reports/pre_fastqc/{sample}_{read}_fastqc.html"), sample=SAMPLE_PREFIX, read=READ_SUFFIX)
 	output: join(PROJECT_DIR,  "01_processing/00_qc_reports/pre_multiqc/multiqc_report.html")
 	params:
@@ -164,13 +179,8 @@ rule rm_host_sync:
 		fwd = join(PROJECT_DIR, "01_processing/05_sync/{sample}_1.fq"),
 		rev = join(PROJECT_DIR, "01_processing/05_sync/{sample}_2.fq"),
 		orp = join(PROJECT_DIR, "01_processing/05_sync/{sample}_orphans.fq")
-	shell: """
-		mkdir -p {PROJECT_DIR}/01_processing/05_sync/
-		/labs/asbhatt/ribado/tools/bhattlab_workflows/preprocessing/scripts/sync.py {input.rep_fwd} {input.fwd} {input.rev} {output.fwd} {output.rev} {output.orp}
-		# concatinate the orphans reads after host removal with the orphan reads from syncing prior to host removal
-		cat {input.orp} >> {output.orp}
-
-	"""
+	shell:
+		"scripts/sync.py {input} {output}"
 
 ################################################################################
 rule post_fastqc:
@@ -203,7 +213,7 @@ rule assembly_meta_file:
 	output: join(PROJECT_DIR, "01_processing/assembly_input.txt")
 	run:
 		outfile = str(output)
-		if (os.path.exists(outfile)): 
+		if (os.path.exists(outfile)):
 			os.remove(outfile)
 		with open(outfile, 'w') as outf:
 			outf.writelines(['# Sample\tReads1.fq[.gz][,Reads2.fq[.gz][,orphans.fq[.gz]]]\n'])
@@ -220,7 +230,7 @@ rule classification_meta_file:
 	output: join(PROJECT_DIR, "01_processing/classification_input.txt")
 	run:
 		outfile = str(output)
-		if (os.path.exists(outfile)): 
+		if (os.path.exists(outfile)):
 			os.remove(outfile)
 		with open(outfile, 'w') as outf:
 			outf.writelines(['# Sample\tr1\tr2\n'])
@@ -232,15 +242,15 @@ rule classification_meta_file:
 
 ################################################################################
 def file_len(fname):
-	p = subprocess.Popen('zcat -f ' + fname + ' | wc -l', stdout=subprocess.PIPE, 
+	p = subprocess.Popen('zcat -f ' + fname + ' | wc -l', stdout=subprocess.PIPE,
 											  stderr=subprocess.PIPE, shell=True)
 	result, err = p.communicate()
 	if p.returncode != 0:
 		raise IOError(err)
 	return int(result.strip().split()[0])
 
-rule readcounts: 
-	input: 
+rule readcounts:
+	input:
 		raw = expand(join(DATA_DIR, "{sample}_") + READ_SUFFIX[0] + EXTENSION, sample=SAMPLE_PREFIX),
 		trimmed = expand(join(PROJECT_DIR, "01_processing/01_trimmed/{sample}_") + READ_SUFFIX[0] + "_val_1.fq.gz", sample=SAMPLE_PREFIX),
 		dedup = expand(join(PROJECT_DIR, "01_processing/03_sync/{sample}_orphans.fq"), sample=SAMPLE_PREFIX),
@@ -250,16 +260,16 @@ rule readcounts:
 		join(PROJECT_DIR, "01_processing/readcounts.tsv")
 	run:
 		outfile = str(output)
-		if (os.path.exists(outfile)): 
+		if (os.path.exists(outfile)):
 			os.remove(outfile)
 		with open(outfile, 'w') as outf:
 			outf.writelines('Sample\traw_reads\ttrimmed_reads\ttrimmed_frac\tdeduplicated_reads\tdeduplicated_frac\thost_removed_reads\thost_removed_frac\torphan_reads\torphan_frac\n')
 			for sample in SAMPLE_PREFIX:
 				raw_file = join(DATA_DIR, sample + "_") + READ_SUFFIX[0] + EXTENSION
 				trimmed_file = join(PROJECT_DIR, "01_processing/01_trimmed/" + sample + "_") + READ_SUFFIX[0] + "_val_1.fq.gz"
-				dedup_file = join(PROJECT_DIR, "01_processing/03_sync/" + sample + "_1.fq") 
-				rmhost_file = join(PROJECT_DIR, "01_processing/05_sync/" + sample + "_1.fq") 
-				orphans_file = join(PROJECT_DIR, "01_processing/05_sync/" + sample + "_orphans.fq") 
+				dedup_file = join(PROJECT_DIR, "01_processing/03_sync/" + sample + "_1.fq")
+				rmhost_file = join(PROJECT_DIR, "01_processing/05_sync/" + sample + "_1.fq")
+				orphans_file = join(PROJECT_DIR, "01_processing/05_sync/" + sample + "_orphans.fq")
 
 				raw_reads = int(file_len(raw_file) / 4)
 				trimmed_reads = int(file_len(trimmed_file) / 4)
@@ -272,7 +282,7 @@ rule readcounts:
 				rmhost_frac = round(rmhost_reads / float(raw_reads), 3)
 				orphans_frac = round(orphans_reads / float(raw_reads), 3)
 
-				line = '\t'.join([sample, str(raw_reads), 
+				line = '\t'.join([sample, str(raw_reads),
 					str(trimmed_reads), str(trimmed_frac),
 					str(dedup_reads), str(dedup_frac),
 					str(rmhost_reads), str(rmhost_frac),
